@@ -8,6 +8,7 @@ import lombok.ToString;
 import mz.org.fgh.mentoring.base.BaseEntity;
 import mz.org.fgh.mentoring.dto.healthFacility.HealthFacilityDTO;
 import mz.org.fgh.mentoring.entity.location.District;
+import mz.org.fgh.mentoring.entity.partner.Partner;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
@@ -33,6 +34,15 @@ public class HealthFacility extends BaseEntity {
     @NotEmpty
     @Column(name = "HEALTH_FACILITY", nullable = false, length = 80)
     private String healthFacility;
+
+    // ✅ Parceiro Clínico (FK)
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "CLINICAL_PARTNER_ID", nullable = true)
+    private Partner clinicalPartner;
+
+    // ✅ Outros Parceiros (JSON em MariaDB)
+    @Column(name = "OTHER_PARTNERS", nullable = true, columnDefinition = "json")
+    private String otherPartners;
 
     @Creator
     public HealthFacility(){}

@@ -13,5 +13,6 @@
     <include file="db/changelog/2024/12/30-12-changelog.xml"/>
     <include file="db/changelog/2025/01/14-01-changelog.xml"/>
     <include file="db/changelog/2025/01/db.changelog-mentoring-settings.xml"/>
+    <include file="db/changelog/2026/0260223-01-add-partners-to-health_facilities.xml"/>
 
 </databaseChangeLog>
