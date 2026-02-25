@@ -1,5 +1,6 @@
 package mz.org.fgh.mentoring.service.healthfacility;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micronaut.core.annotation.Nullable;
 import io.micronaut.data.model.Page;
 import io.micronaut.data.model.Pageable;
@@ -8,10 +9,13 @@ import jakarta.inject.Singleton;
 import mz.org.fgh.mentoring.dto.healthFacility.HealthFacilityDTO;
 import mz.org.fgh.mentoring.entity.healthfacility.HealthFacility;
 import mz.org.fgh.mentoring.entity.location.Location;
+import mz.org.fgh.mentoring.entity.partner.Partner;
 import mz.org.fgh.mentoring.entity.tutor.Tutor;
+import mz.org.fgh.mentoring.error.MentoringBusinessException;
 import mz.org.fgh.mentoring.error.RecordInUseException;
 import mz.org.fgh.mentoring.repository.healthFacility.HealthFacilityRepository;
 import mz.org.fgh.mentoring.repository.location.LocationRepository;
+import mz.org.fgh.mentoring.repository.partner.PartnerRepository;
 import mz.org.fgh.mentoring.repository.ronda.RondaRepository;
 import mz.org.fgh.mentoring.repository.tutor.TutorRepository;
 import mz.org.fgh.mentoring.util.Utilities;
@@ -33,10 +37,19 @@ public class HealthFacilityService {
     private final LocationRepository locationRepository;
     private final RondaRepository rondaRepository;
 
-    public HealthFacilityService(HealthFacilityRepository healthFacilityRepository, LocationRepository locationRepository, RondaRepository rondaRepository) {
+    private final PartnerRepository partnerRepository;
+    private final ObjectMapper objectMapper;
+
+    public HealthFacilityService(HealthFacilityRepository healthFacilityRepository,
+                                 LocationRepository locationRepository,
+                                 RondaRepository rondaRepository,
+                                 PartnerRepository partnerRepository,
+                                 ObjectMapper objectMapper) {
         this.healthFacilityRepository = healthFacilityRepository;
         this.locationRepository = locationRepository;
         this.rondaRepository = rondaRepository;
+        this.partnerRepository = partnerRepository;
+        this.objectMapper = objectMapper;
     }
 
     public List<HealthFacility> findAllHealthFacilities() {
@@ -122,22 +135,31 @@ public class HealthFacilityService {
     }
 
     @Transactional
-    public HealthFacility create(HealthFacility facility) {
-        facility.setUuid(java.util.UUID.randomUUID().toString());
-        facility.setCreatedAt(mz.org.fgh.mentoring.util.DateUtils.getCurrentDate());
-        facility.setLifeCycleStatus(mz.org.fgh.mentoring.util.LifeCycleStatus.ACTIVE);
-        return healthFacilityRepository.save(facility);
+    public HealthFacility create(HealthFacilityDTO dto, String userUuid) {
+        HealthFacility entity = dto.toEntity();
+        entity.setUuid(java.util.UUID.randomUUID().toString());
+        entity.setCreatedBy(userUuid);
+        entity.setCreatedAt(mz.org.fgh.mentoring.util.DateUtils.getCurrentDate());
+        entity.setLifeCycleStatus(mz.org.fgh.mentoring.util.LifeCycleStatus.ACTIVE);
+
+        applyPartners(entity, dto);
+
+        return healthFacilityRepository.save(entity);
     }
 
     @Transactional
-    public HealthFacility update(HealthFacility facility) {
-        HealthFacility existing = healthFacilityRepository.findByUuid(facility.getUuid())
-                .orElseThrow(() -> new RuntimeException("Unidade sanitária não encontrada com UUID: " + facility.getUuid()));
+    public HealthFacility update(HealthFacilityDTO dto, String userUuid) {
+        HealthFacility existing = healthFacilityRepository.findByUuid(dto.getUuid())
+                .orElseThrow(() -> new MentoringBusinessException("Unidade sanitária não encontrada com UUID: " + dto.getUuid()));
 
-        existing.setHealthFacility(facility.getHealthFacility());
-        existing.setDistrict(facility.getDistrict());
+        // atualiza campos normais
+        existing.setHealthFacility(dto.getHealthFacility());
+        if (dto.getDistrictDTO() != null) existing.setDistrict(new mz.org.fgh.mentoring.entity.location.District(dto.getDistrictDTO()));
+        existing.setUpdatedBy(userUuid);
         existing.setUpdatedAt(mz.org.fgh.mentoring.util.DateUtils.getCurrentDate());
-        existing.setUpdatedBy(facility.getUpdatedBy());
+
+        // aplica parceiros
+        applyPartners(existing, dto);
 
         return healthFacilityRepository.update(existing);
     }
@@ -145,7 +167,7 @@ public class HealthFacilityService {
     @Transactional
     public HealthFacility updateLifeCycleStatus(String uuid, mz.org.fgh.mentoring.util.LifeCycleStatus status, String userUuid) {
         HealthFacility facility = healthFacilityRepository.findByUuid(uuid)
-                .orElseThrow(() -> new RuntimeException("Unidade sanitária não encontrada com UUID: " + uuid));
+                .orElseThrow(() -> new MentoringBusinessException("Unidade sanitária não encontrada com UUID: " + uuid));
 
         facility.setLifeCycleStatus(status);
         facility.setUpdatedAt(mz.org.fgh.mentoring.util.DateUtils.getCurrentDate());
@@ -157,7 +179,7 @@ public class HealthFacilityService {
     @Transactional
     public void delete(String uuid) {
         HealthFacility facility = healthFacilityRepository.findByUuid(uuid)
-                .orElseThrow(() -> new RuntimeException("Unidade sanitária não encontrada com UUID: " + uuid));
+                .orElseThrow(() -> new MentoringBusinessException("Unidade sanitária não encontrada com UUID: " + uuid));
 
         long used = locationRepository.countByHealthFacility(facility) + rondaRepository.countByHealthFacility(facility);
         // Verificações adicionais podem ser colocadas aqui se necessário
@@ -166,4 +188,41 @@ public class HealthFacilityService {
         healthFacilityRepository.delete(facility);
     }
 
+    private String toJson(List<Long> ids) {
+        try {
+            if (ids == null || ids.isEmpty()) return null;
+            return objectMapper.writeValueAsString(ids);
+        } catch (Exception e) {
+            throw new RuntimeException("Falha ao serializar outros parceiros.", e);
+        }
+    }
+
+    private void applyPartners(HealthFacility entity, HealthFacilityDTO dto) {
+        // Parceiro clínico
+        if (dto.getClinicalPartnerId() != null) {
+            Partner clinical = partnerRepository.findById(dto.getClinicalPartnerId())
+                    .orElseThrow(() -> new RuntimeException("Parceiro Clínico não encontrado: " + dto.getClinicalPartnerId()));
+            entity.setClinicalPartner(clinical);
+        } else {
+            entity.setClinicalPartner(null);
+        }
+
+        // Outros parceiros
+        List<Long> others = dto.getOtherPartnerIds();
+
+        if (others != null && dto.getClinicalPartnerId() != null && others.contains(dto.getClinicalPartnerId())) {
+            throw new RuntimeException("Outros Parceiros não pode conter o Parceiro Clínico.");
+        }
+
+        if (others != null) {
+            for (Long id : others) {
+                if (id == null) continue;
+                if (!partnerRepository.existsById(id)) {
+                    throw new RuntimeException("Parceiro em Outros Parceiros não existe: " + id);
+                }
+            }
+        }
+
+        entity.setOtherPartners(toJson(others));
+    }
 }

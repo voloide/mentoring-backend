@@ -144,9 +144,7 @@ public class HealthFacilityController extends BaseController {
     @Post
     public HttpResponse<?> create(@Body HealthFacilityDTO dto, Authentication authentication) {
         String userUuid = (String) authentication.getAttributes().get("useruuid");
-        HealthFacility facility = new HealthFacility(dto);
-        facility.setCreatedBy(userUuid);
-        HealthFacility created = healthFacilityService.create(facility);
+        HealthFacility created = healthFacilityService.create(dto, userUuid);
         return HttpResponse.created(SuccessResponse.of("Unidade sanitária criada com sucesso", new HealthFacilityDTO(created)));
     }
 
@@ -155,9 +153,7 @@ public class HealthFacilityController extends BaseController {
     @Put
     public HttpResponse<?> update(@Body HealthFacilityDTO dto, Authentication authentication) {
         String userUuid = (String) authentication.getAttributes().get("useruuid");
-        HealthFacility facility = new HealthFacility(dto);
-        facility.setUpdatedBy(userUuid);
-        HealthFacility updated = healthFacilityService.update(facility);
+        HealthFacility updated = healthFacilityService.update(dto, userUuid);
         return HttpResponse.ok(SuccessResponse.of("Unidade sanitária atualizada com sucesso", new HealthFacilityDTO(updated)));
     }
 
