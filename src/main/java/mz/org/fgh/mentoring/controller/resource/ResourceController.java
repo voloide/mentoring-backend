@@ -5,6 +5,7 @@ import io.micronaut.http.HttpStatus;
 import io.micronaut.http.MediaType;
 import io.micronaut.http.annotation.*;
 import io.micronaut.http.multipart.CompletedFileUpload;
+import io.micronaut.core.annotation.Nullable;
 import io.micronaut.security.annotation.Secured;
 import io.micronaut.security.authentication.Authentication;
 import io.micronaut.security.rules.SecurityRule;
@@ -12,7 +13,6 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import lombok.NonNull;
 import mz.org.fgh.mentoring.api.RESTAPIMapping;
 import mz.org.fgh.mentoring.api.RestAPIResponse;
 import mz.org.fgh.mentoring.base.BaseController;
@@ -33,9 +33,7 @@ import mz.org.fgh.mentoring.util.LifeCycleStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.*;
 import java.io.IOException;
-import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -67,6 +65,21 @@ public class ResourceController extends BaseController {
         this.sessionRecommendedResourceRepository = sessionRecommendedResourceRepository;
     }
 
+    /**
+     * Resolves fileName against the resources directory, stripping any directory
+     * components first so a value like "../../etc/passwd" can't escape the
+     * directory (path traversal).
+     */
+    private Path resolveSafeResourcePath(String fileName) throws IOException {
+        Path base = Paths.get(settings.get(RESOURCES_DIRECTORY, "/srv/his/mentoring/backend/ea_resources")).toAbsolutePath().normalize();
+        String safeFileName = Paths.get(fileName).getFileName().toString();
+        Path resolved = base.resolve(safeFileName).normalize();
+        if (!resolved.startsWith(base)) {
+            throw new SecurityException("Caminho de ficheiro inválido");
+        }
+        return resolved;
+    }
+
     @Secured(SecurityRule.IS_AUTHENTICATED)
     @Operation(summary = "Return a list off all Resources")
     @ApiResponse(content = @Content(mediaType = MediaType.APPLICATION_JSON))
@@ -83,7 +96,7 @@ public class ResourceController extends BaseController {
         return resourceDTOS;
     }
 
-    @Secured(SecurityRule.IS_AUTHENTICATED)
+    @Secured({"NATIONAL_ADMINISTRATOR", "PROVINCIAL_ADMINISTRATOR", "DISTRICT_ADMINISTRATOR", "NATIONAL_MENTOR", "PROVINCIAL_MENTOR", "DISTRICT_MENTOR"})
     @Operation(summary = "Save Resource to database")
     @ApiResponse(content = @Content(mediaType = MediaType.APPLICATION_JSON))
     @Tag(name = "Resource")
@@ -109,36 +122,7 @@ public class ResourceController extends BaseController {
         }
     }
 
-    @Secured(SecurityRule.IS_AUTHENTICATED)
-    @Operation(summary = "Update the Resources JSON")
-    @ApiResponse(content = @Content(mediaType = MediaType.APPLICATION_JSON))
-    @Patch("/updateresourcetreewithoutfile")
-    @Tag(name = "Resource")
-    public HttpResponse<RestAPIResponse> updateResourceTreeWithoutFile(@NonNull @Body ResourceDTO resourceDTO, Authentication authentication) {
-        try {
-            Resource resource = new Resource(resourceDTO);
-            User user = this.userRepository.fetchByUserId((Long) authentication.getAttributes().get("userInfo"));
-            Optional<Resource> resourceRepositoryByUuid = this.resourceRepository.findByUuid(resource.getUuid());
-            if (resourceRepositoryByUuid.isPresent()) {
-                resourceRepositoryByUuid.get().setResource(resource.getResource());
-                resourceRepositoryByUuid.get().setUpdatedBy(user.getUuid());
-                resourceRepositoryByUuid.get().setUpdatedAt(DateUtils.getCurrentDate());
-                Resource resourceResp = this.resourceRepository.update(resourceRepositoryByUuid.get());
-
-                LOG.info("Updated resource {}", resourceResp);
-                return HttpResponse.ok().body(new ResourceDTO(resourceRepositoryByUuid.get(), null));
-            }
-            return null;
-        } catch (Exception e) {
-            LOG.error(e.getMessage());
-            return HttpResponse.badRequest().body(MentoringAPIError.builder()
-                    .status(HttpStatus.BAD_REQUEST.getCode())
-                    .error(e.getLocalizedMessage())
-                    .message(e.getMessage()).build());
-        }
-    }
-
-    @Secured(SecurityRule.IS_AUTHENTICATED)
+    @Secured({"NATIONAL_ADMINISTRATOR", "PROVINCIAL_ADMINISTRATOR", "DISTRICT_ADMINISTRATOR", "NATIONAL_MENTOR", "PROVINCIAL_MENTOR", "DISTRICT_MENTOR"})
     @Operation(summary = "Update the Resources JSON")
     @ApiResponse(content = @Content(mediaType = MediaType.APPLICATION_JSON))
     @Patch(value = "/updateresourcetree", consumes = MediaType.MULTIPART_FORM_DATA)
@@ -146,7 +130,7 @@ public class ResourceController extends BaseController {
     public HttpResponse<RestAPIResponse> updateResourceTree(@Part("id") Long id,
                                                             @Part("uuid") String uuid,
                                                             @Part("resource") String resource,
-                                                            @Part("file") CompletedFileUpload file,
+                                                            @Nullable @Part("file") CompletedFileUpload file,
                                                             Authentication authentication) {
         try {
             ResourceDTO resourceDTO = new ResourceDTO();
@@ -168,11 +152,17 @@ public class ResourceController extends BaseController {
 
                 try {
                     if (file != null && file.getFilename() != null) {
-                        Path path = Paths.get(settings.get(RESOURCES_DIRECTORY, "/srv/his/mentoring/backend/ea_resources"), file.getFilename());
+                        Path path = resolveSafeResourcePath(file.getFilename());
                         Files.createDirectories(path.getParent());
                         Files.write(path, file.getBytes());
                         LOG.info("Recurso gravado.");
                     }
+                } catch (SecurityException e) {
+                    LOG.error("Nome de ficheiro inválido: {}", e.getMessage());
+                    return HttpResponse.badRequest().body(MentoringAPIError.builder()
+                            .status(HttpStatus.BAD_REQUEST.getCode())
+                            .error(e.getLocalizedMessage())
+                            .message("Nome de ficheiro inválido").build());
                 } catch (IOException e) {
                     LOG.error("Falha ao gravar recurso: {}", e.getMessage());
                     return HttpResponse.serverError().body(MentoringAPIError.builder()
@@ -207,7 +197,7 @@ public class ResourceController extends BaseController {
     @Tag(name = "Resource")
     public HttpResponse<?> loadFile(@QueryValue String fileName) {
         try {
-                Path filePath = Paths.get(settings.get(RESOURCES_DIRECTORY, "/srv/his/mentoring/backend/ea_resources"), fileName);
+                Path filePath = resolveSafeResourcePath(fileName);
                 if (Files.exists(filePath)) {
                     byte[] fileBytes = Files.readAllBytes(filePath);
                     return HttpResponse.ok()
@@ -220,6 +210,12 @@ public class ResourceController extends BaseController {
                             .error("Arquivo não encontrado")
                             .message("Arquivo com o nome especificado não encontrado").build());
                 }
+        } catch (SecurityException e) {
+            LOG.error("Nome de ficheiro inválido: {}", e.getMessage());
+            return HttpResponse.badRequest().body(MentoringAPIError.builder()
+                    .status(HttpStatus.BAD_REQUEST.getCode())
+                    .error(e.getLocalizedMessage())
+                    .message("Nome de ficheiro inválido").build());
         } catch (Exception e) {
             LOG.error("Erro ao buscar arquivo de recurso: {}", e.getMessage());
             return HttpResponse.serverError().body(MentoringAPIError.builder()
@@ -249,26 +245,26 @@ public class ResourceController extends BaseController {
         if (Integer.toString(sessionRecommendedResource.get().getTutored().getEmployee().getNuit()).equals(nuit)) {
 
             try {
-                    Path filePath = Paths.get(settings.get(RESOURCES_DIRECTORY, "/srv/his/mentoring/backend/ea_resources"), fileName);
+                    Path filePath = resolveSafeResourcePath(fileName);
                     if (Files.exists(filePath)) {
                         byte[] fileBytes = Files.readAllBytes(filePath);
 
-                        HttpResponse<?> results = HttpResponse.ok()
+                        return HttpResponse.ok()
                                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                                 .contentLength(fileBytes.length)
                                 .body(fileBytes);
-
-                        URI link = new URI("file://"+filePath.toString());
-
-                        Desktop.getDesktop().browse(link);
-
-                        return results;
                     } else {
                         return HttpResponse.notFound().body(MentoringAPIError.builder()
                                 .status(HttpStatus.NOT_FOUND.getCode())
                                 .error("Arquivo não encontrado")
                                 .message("Arquivo com o nome especificado não encontrado").build());
                     }
+            } catch (SecurityException e) {
+                LOG.error("Nome de ficheiro inválido: {}", e.getMessage());
+                return HttpResponse.badRequest().body(MentoringAPIError.builder()
+                        .status(HttpStatus.BAD_REQUEST.getCode())
+                        .error(e.getLocalizedMessage())
+                        .message("Nome de ficheiro inválido").build());
             } catch (Exception e) {
                 LOG.error("Erro ao buscar arquivo de recurso: {}", e.getMessage());
                 return HttpResponse.serverError().body(MentoringAPIError.builder()
