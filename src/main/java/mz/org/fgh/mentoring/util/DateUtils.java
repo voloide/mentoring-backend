@@ -119,6 +119,9 @@ public class DateUtils {
 
 
     public static Date createDate(String stringDate, String dateFormat) {
+        if (stringDate == null || stringDate.trim().isEmpty()) {
+            return null;
+        }
         try {
             SimpleDateFormat sDate = new SimpleDateFormat(dateFormat);
             Date date = sDate.parse(stringDate);
